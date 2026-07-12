@@ -1,0 +1,7 @@
+customtkinter>=5.2.0
+requests>=2.31.0
+phonenumbers>=8.13.0
+cryptography>=39.0.0
+matplotlib>=3.7.0
+selenium>=4.15.0
+chromedriver-py>=2.1.0
